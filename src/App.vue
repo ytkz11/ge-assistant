@@ -1,5 +1,5 @@
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'sidebar-open': sidebarOpen }">
     <MapView
       ref="mapRef"
       :selected-date="selectedDate"
@@ -11,6 +11,9 @@
       @center-change="handleCenterChange"
       @selection-complete="handleSelectionComplete"
     />
+    <button class="menu-toggle" @click="sidebarOpen = !sidebarOpen">
+      <span class="menu-icon">{{ sidebarOpen ? '\u2715' : '\u2630' }}</span>
+    </button>
     <Sidebar
       :imagery-dates="imageryDates"
       :selected-date="selectedDate"
@@ -20,6 +23,7 @@
       :selection-mode="selectionMode"
       :selection-region="selectionRegion"
       :provider="provider"
+      :open="sidebarOpen"
       @update:selected-date="selectedDate = $event"
       @update:selected-zoom="selectedZoom = $event"
       @update:provider="handleProviderChange"
@@ -28,6 +32,7 @@
       @toggle-selection="toggleSelection"
       @clear-selection="clearSelection"
       @open-download="showDownloadDialog = true"
+      @close="sidebarOpen = false"
     />
     <DownloadDialog
       :visible="showDownloadDialog"
@@ -61,6 +66,7 @@ const provider = ref('google')
 const waybackLayers = ref([])
 const showDownloadDialog = ref(false)
 const downloading = ref(false)
+const sidebarOpen = ref(false)
 
 function handleCenterChange(coords) {
   currentCenter.value = coords
@@ -77,6 +83,7 @@ function toggleSelection() {
   } else {
     selectionRegion.value = null
     selectionMode.value = true
+    sidebarOpen.value = false
   }
 }
 
@@ -162,5 +169,34 @@ function generateDemoDates() {
   height: 100vh;
   position: relative;
   display: flex;
+}
+
+.menu-toggle {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 10000;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.menu-icon {
+  line-height: 1;
+}
+
+@media (max-width: 768px) {
+  .menu-toggle {
+    display: flex;
+  }
 }
 </style>

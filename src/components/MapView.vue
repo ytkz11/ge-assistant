@@ -126,6 +126,19 @@ function clearSelection() {
   selectionDone.value = false
 }
 
+function updateSelRectFromBounds() {
+  if (!map || !selBounds.value) return
+  const b = selBounds.value
+  const nw = map.latLngToContainerPoint(L.latLng(b.north, b.west))
+  const se = map.latLngToContainerPoint(L.latLng(b.south, b.east))
+  selRect.value = {
+    left: Math.min(nw.x, se.x),
+    top: Math.min(nw.y, se.y),
+    width: Math.abs(se.x - nw.x),
+    height: Math.abs(se.y - nw.y)
+  }
+}
+
 async function loadTileImage(url) {
   try {
     const response = await fetch(url, { referrerPolicy: 'no-referrer' })
@@ -268,12 +281,13 @@ onMounted(async () => {
 
   satLayer = L.tileLayer(GOOGLE_SAT, { maxZoom: 21, subdomains: ['0', '1', '2', '3'], crossOrigin: true, attribution: 'Google Satellite' }).addTo(map)
   labelsLayer = L.tileLayer(LABELS_URL, { maxZoom: 18, subdomains: ['1', '2', '3', '4'], crossOrigin: true, attribution: 'AutoNavi' })
+  if (props.showLabels) labelsLayer.addTo(map)
 
   const osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' })
   L.control.layers({ 'Google Satellite': satLayer, 'OpenStreetMap': osmLayer }, {}, { collapsed: false }).addTo(map)
 
-  map.on('moveend', () => { center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }; zoom.value = map.getZoom(); emit('center-change', center.value) })
-  map.on('zoomend', () => { zoom.value = map.getZoom() })
+  map.on('moveend', () => { center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }; zoom.value = map.getZoom(); emit('center-change', center.value); updateSelRectFromBounds() })
+  map.on('zoomend', () => { zoom.value = map.getZoom(); updateSelRectFromBounds() })
 
   center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }
   zoom.value = map.getZoom()
@@ -352,8 +366,34 @@ defineExpose({ downloadTiles, clearSelection })
 .map-date-badge { position: absolute; top: 12px; right: 12px; z-index: 1000; background: rgba(0,120,255,0.9); color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 16px; font-weight: 600; font-family: monospace; }
 .tile-count { position: absolute; top: 12px; left: 12px; z-index: 1000; background: rgba(0,0,0,0.65); color: #aaa; padding: 6px 12px; border-radius: 6px; font-size: 11px; }
 
-.download-progress { position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%); z-index: 1001; background: rgba(0,0,0,0.9); padding: 12px 20px; border-radius: 8px; min-width: 280px; }
+.download-progress { position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%); z-index: 1001; background: rgba(0,0,0,0.9); padding: 12px 20px; border-radius: 8px; min-width: 200px; max-width: 90vw; }
 .progress-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, #00aaff, #34c759); border-radius: 3px; transition: width 0.1s; }
 .progress-text { color: #ccc; font-size: 12px; text-align: center; }
+
+@media (max-width: 768px) {
+  .map-info {
+    bottom: 8px;
+    left: 8px;
+    gap: 8px;
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+  .map-date-badge {
+    top: 8px;
+    right: 8px;
+    font-size: 13px;
+    padding: 6px 12px;
+  }
+  .tile-count {
+    top: 8px;
+    left: 8px;
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+  .selection-hint {
+    font-size: 12px;
+    padding: 8px 14px;
+  }
+}
 </style>

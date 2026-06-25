@@ -1,5 +1,5 @@
 <template>
-  <div class="sidebar">
+  <div class="sidebar" :class="{ open }">
     <div class="sidebar-header">
       <h1>GE Satellite Assistant</h1>
       <p class="subtitle">Google Earth 历史卫星图工具</p>
@@ -118,7 +118,8 @@ defineProps({
   showLabels: { type: Boolean, default: false },
   selectionMode: { type: Boolean, default: false },
   selectionRegion: { type: Object, default: null },
-  provider: { type: String, default: 'google' }
+  provider: { type: String, default: 'google' },
+  open: { type: Boolean, default: true }
 })
 
 defineEmits([
@@ -129,7 +130,8 @@ defineEmits([
   'toggle-labels',
   'toggle-selection',
   'open-download',
-  'clear-selection'
+  'clear-selection',
+  'close'
 ])
 </script>
 
@@ -143,6 +145,23 @@ defineEmits([
   display: flex;
   flex-direction: column;
   border-right: 1px solid #333;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 9999;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    box-shadow: none;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
+  }
 }
 
 .sidebar-header {
@@ -454,5 +473,42 @@ defineEmits([
 .clear-btn:hover {
   background: #cc0000;
   color: #fff;
+}
+
+@media (max-width: 768px) {
+  .sidebar-header {
+    padding: 16px;
+  }
+  .sidebar-header h1 {
+    font-size: 16px;
+  }
+  .section {
+    padding: 12px 16px;
+  }
+  .query-btn, .selection-btn {
+    padding: 14px;
+    font-size: 15px;
+  }
+  .date-item {
+    padding: 12px;
+    font-size: 14px;
+    min-height: 44px;
+  }
+  .provider-btn {
+    padding: 12px 8px;
+    font-size: 13px;
+    min-height: 44px;
+  }
+  .download-btn, .clear-btn {
+    padding: 12px;
+    font-size: 14px;
+    min-height: 44px;
+  }
+  .zoom-slider {
+    height: 6px;
+  }
+  .toggle-row {
+    min-height: 44px;
+  }
 }
 </style>

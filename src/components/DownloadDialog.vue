@@ -147,6 +147,7 @@ function confirm() {
   background: #1a1a2e;
   border-radius: 12px;
   width: 480px;
+  max-width: 90vw;
   max-height: 80vh;
   overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
