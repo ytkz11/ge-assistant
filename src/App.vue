@@ -10,6 +10,7 @@
       :wayback-layers="waybackLayers"
       @center-change="handleCenterChange"
       @selection-complete="handleSelectionComplete"
+      @update:selected-date="selectedDate = $event"
     />
     <button class="menu-toggle" @click="sidebarOpen = !sidebarOpen">
       <span class="menu-icon">{{ sidebarOpen ? '\u2715' : '\u2630' }}</span>
@@ -17,7 +18,6 @@
     <Sidebar
       :imagery-dates="imageryDates"
       :selected-date="selectedDate"
-      :selected-zoom="selectedZoom"
       :loading="loading"
       :show-labels="showLabels"
       :selection-mode="selectionMode"
@@ -25,7 +25,6 @@
       :provider="provider"
       :open="sidebarOpen"
       @update:selected-date="selectedDate = $event"
-      @update:selected-zoom="selectedZoom = $event"
       @update:provider="handleProviderChange"
       @query="handleQuery"
       @toggle-labels="showLabels = !showLabels"
@@ -55,7 +54,6 @@ import { fetchWaybackLayers, getWaybackDates } from './esri-wayback'
 
 const mapRef = ref(null)
 const selectedDate = ref(null)
-const selectedZoom = ref(18)
 const imageryDates = ref([])
 const loading = ref(false)
 const currentCenter = ref({ lat: 39.9042, lng: 116.4074 })
@@ -121,45 +119,20 @@ async function handleQuery() {
   selectedDate.value = null
 
   try {
-    if (provider.value === 'wayback') {
-      const layers = await fetchWaybackLayers()
-      waybackLayers.value = layers
-      const dates = getWaybackDates(layers)
-      imageryDates.value = dates.map(d => ({ date: d }))
-    } else {
-      imageryDates.value = generateDemoDates()
-    }
+    const layers = await fetchWaybackLayers()
+    waybackLayers.value = layers
+    const dates = getWaybackDates(layers)
+    imageryDates.value = dates.map(d => ({ date: d }))
   } catch (e) {
     console.error('Query failed:', e)
-    if (provider.value === 'wayback') {
-      imageryDates.value = []
-      waybackLayers.value = []
-    } else {
-      imageryDates.value = generateDemoDates()
-    }
+    imageryDates.value = []
+    waybackLayers.value = []
   } finally {
     loading.value = false
     if (imageryDates.value.length > 0) {
       selectedDate.value = imageryDates.value[0].date
     }
   }
-}
-
-function generateDemoDates() {
-  const dates = []
-  const now = new Date()
-  for (let i = 0; i < 15; i++) {
-    const year = now.getFullYear() - i
-    const month = Math.floor(Math.random() * 12) + 1
-    const day = Math.floor(Math.random() * 28) + 1
-    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    dates.push({
-      date: dateStr,
-      epoch: 1000 + i * 10,
-      label: dateStr
-    })
-  }
-  return dates.sort((a, b) => b.date.localeCompare(a.date))
 }
 </script>
 

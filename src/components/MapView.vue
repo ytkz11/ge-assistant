@@ -21,14 +21,27 @@
       <div class="progress-bar"><div class="progress-fill" :style="{ width: downloadProgress + '%' }"></div></div>
       <div class="progress-text">下载中... {{ downloadCurrent }}/{{ downloadTotal }} 瓦片</div>
     </div>
+    <div v-if="imageryDates.length > 1" class="time-slider-wrap">
+      <span class="time-label">{{ sliderDate }}</span>
+      <input
+        type="range"
+        class="time-slider"
+        :min="0"
+        :max="imageryDates.length - 1"
+        :value="sliderIndex"
+        @input="sliderIndex = parseInt($event.target.value)"
+      />
+      <span class="time-range">{{ imageryDates[imageryDates.length - 1].date }}</span>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import L from 'leaflet'
+import gcoord from 'gcoord'
 import { writeArrayBuffer } from 'geotiff'
-import { getWaybackTileUrl, latLngToTile, tileLatLngBounds } from '../esri-wayback'
+import { getWaybackTileUrl, tileLatLngBounds } from '../esri-wayback'
 import { fetchDbRoot, latLngToQuadTree, downloadGoogleHistoricalTile } from '../google-earth'
 
 const props = defineProps({
@@ -40,7 +53,7 @@ const props = defineProps({
   waybackLayers: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['center-change', 'selection-complete'])
+const emit = defineEmits(['center-change', 'selection-complete', 'update:selected-date'])
 
 const mapEl = ref(null)
 let map = null
@@ -63,6 +76,25 @@ let dragStartPx = null
 const selRect = ref(null)
 const selBounds = ref(null)
 
+const sliderIndex = computed({
+  get() {
+    if (!props.selectedDate || props.imageryDates.length === 0) return 0
+    return props.imageryDates.findIndex(d => d.date === props.selectedDate)
+  },
+  set(val) {
+    if (props.imageryDates[val]) {
+      emit('update:selected-date', props.imageryDates[val].date)
+    }
+  }
+})
+
+const sliderDate = computed(() => {
+  if (props.imageryDates[sliderIndex.value]) {
+    return props.imageryDates[sliderIndex.value].date
+  }
+  return ''
+})
+
 const selStyle = computed(() => {
   if (!selRect.value) return {}
   const r = selRect.value
@@ -70,7 +102,28 @@ const selStyle = computed(() => {
 })
 
 const GOOGLE_SAT = 'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
-const LABELS_URL = 'https://webrd{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
+const GCJ02_LABELS_URL = 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=8&ltype=4'
+
+function createLabelsLayer() {
+  return L.tileLayer(GCJ02_LABELS_URL, {
+    maxZoom: 18,
+    subdomains: ['1', '2', '3', '4'],
+    crossOrigin: true,
+    attribution: '高德标注'
+  })
+}
+
+function updateLabelsOffset() {
+  if (!map || !labelsLayer) return
+  const center = map.getCenter()
+  const [gcjLng, gcjLat] = gcoord.transform([center.lng, center.lat], gcoord.WGS84, gcoord.GCJ02)
+  const wgsPt = map.latLngToContainerPoint(L.latLng(center.lat, center.lng))
+  const gcjPt = map.latLngToContainerPoint(L.latLng(gcjLat, gcjLng))
+  const container = labelsLayer.getContainer()
+  if (container) {
+    container.style.transform = `translate(${wgsPt.x - gcjPt.x}px, ${wgsPt.y - gcjPt.y}px)`
+  }
+}
 
 function createGoogleHistoricalLayer(date, epoch) {
   const proto = location.protocol === 'https:' ? 'https' : 'http'
@@ -280,14 +333,19 @@ onMounted(async () => {
   L.control.attribution({ prefix: false }).addTo(map)
 
   satLayer = L.tileLayer(GOOGLE_SAT, { maxZoom: 21, subdomains: ['0', '1', '2', '3'], crossOrigin: true, attribution: 'Google Satellite' }).addTo(map)
-  labelsLayer = L.tileLayer(LABELS_URL, { maxZoom: 18, subdomains: ['1', '2', '3', '4'], crossOrigin: true, attribution: 'AutoNavi' })
-  if (props.showLabels) labelsLayer.addTo(map)
 
-  const osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' })
-  L.control.layers({ 'Google Satellite': satLayer, 'OpenStreetMap': osmLayer }, {}, { collapsed: false }).addTo(map)
+  labelsLayer = createLabelsLayer()
+  if (props.showLabels) { labelsLayer.addTo(map); updateLabelsOffset() }
 
-  map.on('moveend', () => { center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }; zoom.value = map.getZoom(); emit('center-change', center.value); updateSelRectFromBounds() })
-  map.on('zoomend', () => { zoom.value = map.getZoom(); updateSelRectFromBounds() })
+  const osmBaseLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' })
+  L.control.layers(
+    { 'Google Satellite': satLayer, 'OpenStreetMap': osmBaseLayer },
+    { '中文地名': labelsLayer },
+    { collapsed: false }
+  ).addTo(map)
+
+  map.on('moveend', () => { center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }; zoom.value = map.getZoom(); emit('center-change', center.value); updateSelRectFromBounds(); updateLabelsOffset() })
+  map.on('zoomend', () => { zoom.value = map.getZoom(); updateSelRectFromBounds(); updateLabelsOffset() })
 
   center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }
   zoom.value = map.getZoom()
@@ -320,7 +378,7 @@ watch(() => props.selectedDate, (newDate) => {
 
 watch(() => props.showLabels, (show) => {
   if (!map) return
-  if (show) labelsLayer.addTo(map); else map.removeLayer(labelsLayer)
+  if (show) { labelsLayer.addTo(map); updateLabelsOffset() } else { map.removeLayer(labelsLayer) }
 })
 
 defineExpose({ downloadTiles, clearSelection })
@@ -394,6 +452,57 @@ defineExpose({ downloadTiles, clearSelection })
   .selection-hint {
     font-size: 12px;
     padding: 8px 14px;
+  }
+}
+
+.time-slider-wrap {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 10px 16px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.time-label {
+  color: #00aaff;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: monospace;
+  white-space: nowrap;
+  min-width: 100px;
+  text-align: center;
+}
+
+.time-slider {
+  flex: 1;
+  accent-color: #00aaff;
+  height: 4px;
+  cursor: pointer;
+}
+
+.time-range {
+  color: #666;
+  font-size: 11px;
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .time-slider-wrap {
+    padding: 8px 12px 10px;
+    gap: 8px;
+  }
+  .time-label {
+    font-size: 12px;
+    min-width: 80px;
+  }
+  .time-range {
+    font-size: 10px;
   }
 }
 </style>

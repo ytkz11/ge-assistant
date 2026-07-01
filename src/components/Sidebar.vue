@@ -26,21 +26,6 @@
     </div>
 
     <div class="section">
-      <label class="label">缩放级别</label>
-      <div class="zoom-control">
-        <input
-          type="range"
-          min="1"
-          max="21"
-          :value="selectedZoom"
-          @input="$emit('update:selected-zoom', parseInt($event.target.value))"
-          class="zoom-slider"
-        />
-        <span class="zoom-value">{{ selectedZoom }}</span>
-      </div>
-    </div>
-
-    <div class="section">
       <button class="query-btn" @click="$emit('query')" :disabled="loading">
         {{ loading ? '查询中...' : '查询当前位置可用影像' }}
       </button>
@@ -78,7 +63,7 @@
         <span class="toggle-slider-wrap">
           <span class="toggle-slider"></span>
         </span>
-        <span class="toggle-label">OSM 道路标注</span>
+        <span class="toggle-label">中文地名</span>
       </label>
     </div>
 
@@ -113,7 +98,6 @@
 defineProps({
   imageryDates: { type: Array, default: () => [] },
   selectedDate: { type: String, default: null },
-  selectedZoom: { type: Number, default: 18 },
   loading: { type: Boolean, default: false },
   showLabels: { type: Boolean, default: false },
   selectionMode: { type: Boolean, default: false },
