@@ -119,10 +119,14 @@ async function handleQuery() {
   selectedDate.value = null
 
   try {
-    const layers = await fetchWaybackLayers()
-    waybackLayers.value = layers
-    const dates = getWaybackDates(layers)
-    imageryDates.value = dates.map(d => ({ date: d }))
+    if (provider.value === 'google') {
+      imageryDates.value = [{ date: 'latest', epoch: 0 }]
+    } else {
+      const layers = await fetchWaybackLayers()
+      waybackLayers.value = layers
+      const dates = getWaybackDates(layers)
+      imageryDates.value = dates.map(d => ({ date: d }))
+    }
   } catch (e) {
     console.error('Query failed:', e)
     imageryDates.value = []

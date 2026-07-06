@@ -41,8 +41,8 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import L from 'leaflet'
 import gcoord from 'gcoord'
 import { writeArrayBuffer } from 'geotiff'
-import { getWaybackTileUrl, tileLatLngBounds } from '../esri-wayback'
-import { fetchDbRoot, latLngToQuadTree, downloadGoogleHistoricalTile } from '../google-earth'
+import { getWaybackTileUrl, tileLatLngBounds, latLngToTile } from '../esri-wayback'
+import { downloadGoogleHistoricalTile } from '../google-earth'
 
 const props = defineProps({
   selectedDate: { type: String, default: null },
@@ -230,16 +230,10 @@ function getTileUrl(provider, selectedDate, waybackLayers, tileZoom, x, y) {
 
 async function loadGoogleHistoricalTile(tileZoom, x, y) {
   try {
-    await fetchDbRoot()
-    const bounds = tileLatLngBounds(x, y, tileZoom)
-    const lat = (bounds.north + bounds.south) / 2
-    const lng = (bounds.east + bounds.west) / 2
-    const path = latLngToQuadTree(lat, lng, tileZoom)
-    const entry = props.imageryDates.find(d => d.date === props.selectedDate)
-    const epoch = entry ? entry.epoch : 0
-    return await downloadGoogleHistoricalTile(path, epoch, props.selectedDate)
+    const epoch = 0
+    return await downloadGoogleHistoricalTile(tileZoom, x, y, epoch)
   } catch (e) {
-    console.warn('Google historical tile failed, falling back:', e)
+    console.warn('Google historical tile failed:', e)
     return null
   }
 }
