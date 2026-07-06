@@ -51,12 +51,13 @@ import MapView from './components/MapView.vue'
 import Sidebar from './components/Sidebar.vue'
 import DownloadDialog from './components/DownloadDialog.vue'
 import { fetchWaybackLayers, getWaybackDates } from './esri-wayback'
+import { fetchDbRoot, getAvailableDates } from './google-earth'
 
 const mapRef = ref(null)
 const selectedDate = ref(null)
 const imageryDates = ref([])
 const loading = ref(false)
-const currentCenter = ref({ lat: 39.9042, lng: 116.4074 })
+const currentCenter = ref({ lat: 39.9042, lng: 116.4074, zoom: 5 })
 const showLabels = ref(true)
 const selectionMode = ref(false)
 const selectionRegion = ref(null)
@@ -120,7 +121,14 @@ async function handleQuery() {
 
   try {
     if (provider.value === 'google') {
-      imageryDates.value = [{ date: 'latest', epoch: 0 }]
+      await fetchDbRoot()
+      const z = Math.min(currentCenter.value.zoom || 10, 12)
+      const n = Math.pow(2, z)
+      const x = Math.floor((currentCenter.value.lng + 180) / 360 * n)
+      const latRad = currentCenter.value.lat * Math.PI / 180
+      const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n)
+      const dates = await getAvailableDates(z, x, y)
+      imageryDates.value = dates
     } else {
       const layers = await fetchWaybackLayers()
       waybackLayers.value = layers

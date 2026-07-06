@@ -42,7 +42,7 @@ import L from 'leaflet'
 import gcoord from 'gcoord'
 import { writeArrayBuffer } from 'geotiff'
 import { getWaybackTileUrl, tileLatLngBounds, latLngToTile } from '../esri-wayback'
-import { downloadGoogleHistoricalTile } from '../google-earth'
+import { downloadGoogleTilePerTile, fetchDbRoot, getAvailableDates } from '../google-earth'
 
 const props = defineProps({
   selectedDate: { type: String, default: null },
@@ -230,8 +230,7 @@ function getTileUrl(provider, selectedDate, waybackLayers, tileZoom, x, y) {
 
 async function loadGoogleHistoricalTile(tileZoom, x, y) {
   try {
-    const epoch = 0
-    return await downloadGoogleHistoricalTile(tileZoom, x, y, epoch)
+    return await downloadGoogleTilePerTile(tileZoom, x, y, props.selectedDate)
   } catch (e) {
     console.warn('Google historical tile failed:', e)
     return null
@@ -349,7 +348,7 @@ onMounted(async () => {
     { collapsed: false }
   ).addTo(map)
 
-  map.on('moveend', () => { center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }; zoom.value = map.getZoom(); emit('center-change', center.value); updateSelRectFromBounds(); updateLabelsOffset() })
+  map.on('moveend', () => { center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }; zoom.value = map.getZoom(); emit('center-change', { ...center.value, zoom: zoom.value }); updateSelRectFromBounds(); updateLabelsOffset() })
   map.on('zoomend', () => { zoom.value = map.getZoom(); updateSelRectFromBounds(); updateLabelsOffset() })
 
   center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }
@@ -377,7 +376,7 @@ watch(() => props.selectedDate, (newDate) => {
     if (layer) { historicalLayer = createWaybackLayer(layer); if (historicalLayer) historicalLayer.addTo(map) }
   } else if (props.provider === 'google' && props.imageryDates.length > 0) {
     const entry = props.imageryDates.find(d => d.date === newDate)
-    if (entry) { historicalLayer = createGoogleHistoricalLayer(newDate, entry.epoch); historicalLayer.addTo(map) }
+    if (entry) { historicalLayer = createGoogleHistoricalLayer(newDate, entry.epoch || 0); historicalLayer.addTo(map) }
   }
 })
 
