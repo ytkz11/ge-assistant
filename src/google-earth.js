@@ -1,8 +1,16 @@
 import { inflate } from 'pako'
 
-const DBROOT_URL = 'https://khmdb.google.com/dbRoot.v5?&hl=en&gl=us&output=proto'
-const FLATFILE_URL = 'https://khmdb.google.com/flatfile?db=tm&f1={path}-i.{epoch}-{dateHex}'
-const FLATFILE_NO_DATE = 'https://kh.google.com/flatfile?f1={path}-i.{epoch}'
+const DEV = import.meta.env.DEV
+
+const DBROOT_URL = DEV
+  ? '/gproxy/dbroot'
+  : 'https://khmdb.google.com/dbRoot.v5?&hl=en&gl=us&output=proto'
+const FLATFILE_URL = DEV
+  ? '/gproxy/flatfile?db=tm&f1={path}-i.{epoch}-{dateHex}'
+  : 'https://khmdb.google.com/flatfile?db=tm&f1={path}-i.{epoch}-{dateHex}'
+const FLATFILE_NO_DATE = DEV
+  ? '/gproxy/flatfile?f1={path}-i.{epoch}'
+  : 'https://kh.google.com/flatfile?f1={path}-i.{epoch}'
 
 let dbRootData = null
 let encryptionKey = null

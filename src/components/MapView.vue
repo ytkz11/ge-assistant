@@ -29,7 +29,7 @@
         :min="0"
         :max="imageryDates.length - 1"
         :value="sliderIndex"
-        @input="sliderIndex = parseInt($event.target.value)"
+        @input="onSliderInput"
       />
       <span class="time-range">{{ imageryDates[imageryDates.length - 1].date }}</span>
     </div>
@@ -79,13 +79,10 @@ const selBounds = ref(null)
 const sliderIndex = computed({
   get() {
     if (!props.selectedDate || props.imageryDates.length === 0) return 0
-    return props.imageryDates.findIndex(d => d.date === props.selectedDate)
+    const idx = props.imageryDates.findIndex(d => d.date === props.selectedDate)
+    return idx >= 0 ? idx : 0
   },
-  set(val) {
-    if (props.imageryDates[val]) {
-      emit('update:selected-date', props.imageryDates[val].date)
-    }
-  }
+  set(val) {}
 })
 
 const sliderDate = computed(() => {
@@ -95,13 +92,23 @@ const sliderDate = computed(() => {
   return ''
 })
 
+function onSliderInput(e) {
+  const val = parseInt(e.target.value)
+  if (props.imageryDates[val]) {
+    emit('update:selected-date', props.imageryDates[val].date)
+  }
+}
+
 const selStyle = computed(() => {
   if (!selRect.value) return {}
   const r = selRect.value
   return { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' }
 })
 
-const GOOGLE_SAT = 'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
+const DEV = import.meta.env.DEV
+const GOOGLE_SAT = DEV
+  ? '/gproxy/mt{s}/vt/lyrs=s&x={x}&y={y}&z={z}'
+  : 'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
 const GCJ02_LABELS_URL = 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=8&ltype=4'
 
 function createLabelsLayer() {
@@ -126,6 +133,9 @@ function updateLabelsOffset() {
 }
 
 function createGoogleHistoricalLayer(date, epoch) {
+  if (DEV) {
+    return L.tileLayer(`/gproxy/kh?v=188&tx={x},{y},{z}&n=404&ep=1&e=${epoch}`, { maxZoom: 21, opacity: 1.0 })
+  }
   const proto = location.protocol === 'https:' ? 'https' : 'http'
   return L.tileLayer(`${proto}://khmdb.google.com/kh?v=188&tx={x},{y},{z}&n=404&ep=1&e=${epoch}`, { maxZoom: 21, opacity: 1.0 })
 }
@@ -212,6 +222,7 @@ function getTileUrl(provider, selectedDate, waybackLayers, tileZoom, x, y) {
   }
   if (provider === 'google') {
     const subdomain = ['0', '1', '2', '3'][Math.floor(Math.random() * 4)]
+    if (DEV) return `/gproxy/mt${subdomain}/vt/lyrs=s&x=${x}&y=${y}&z=${tileZoom}`
     return `https://mt${subdomain}.google.com/vt/lyrs=s&x=${x}&y=${y}&z=${tileZoom}`
   }
   return null
