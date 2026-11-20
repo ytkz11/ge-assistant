@@ -2,7 +2,7 @@
   <div class="sidebar" :class="{ open }">
     <div class="sidebar-header">
       <h1>GE Satellite Assistant</h1>
-      <p class="subtitle">Google Earth 历史卫星图工具</p>
+      <p class="subtitle">历史卫星影像浏览与导出</p>
     </div>
 
     <div class="section">
@@ -27,12 +27,13 @@
 
     <div class="section">
       <button class="query-btn" @click="$emit('query')" :disabled="loading">
-        {{ loading ? '查询中...' : '查询当前位置可用影像' }}
+        {{ loading ? '查询中...' : (provider === 'wayback' ? '加载 Wayback 发布目录' : '查询地图中心的历史日期') }}
       </button>
+      <p v-if="queryMessage" role="status">{{ queryMessage }}</p>
     </div>
 
     <div v-if="imageryDates.length > 0" class="section">
-      <label class="label">可用历史影像 ({{ imageryDates.length }} 个)</label>
+      <label class="label">{{ provider === 'wayback' ? '发布版本' : '历史影像日期' }} ({{ imageryDates.length }} 个)</label>
       <div class="date-list">
         <button
           v-for="item in imageryDates"
@@ -47,8 +48,8 @@
       </div>
     </div>
 
-    <div v-else class="section empty">
-      <p>点击按钮查询当前区域的卫星影像可用日期</p>
+    <div v-else-if="!queryMessage && !loading" class="section empty">
+      <p>加载目录或查询地图中心的历史日期</p>
     </div>
 
     <div class="section">
@@ -73,7 +74,7 @@
         :class="{ active: selectionMode }"
         @click="$emit('toggle-selection')"
       >
-        {{ selectionMode ? '完成框选' : '框选下载' }}
+        {{ selectionMode ? '取消框选' : '框选下载' }}
       </button>
       <div v-if="selectionRegion" class="region-info">
         <div class="region-label">已选区域</div>
@@ -82,7 +83,7 @@
           {{ selectionRegion.north.toFixed(4) }}, {{ selectionRegion.east.toFixed(4) }}
         </div>
         <div class="region-actions">
-          <button class="download-btn" @click="$emit('open-download')">
+          <button class="download-btn" :disabled="downloading || (provider === 'wayback' && !selectedDate)" @click="$emit('open-download')">
             选择下载参数
           </button>
           <button class="clear-btn" @click="$emit('clear-selection')">
@@ -90,6 +91,7 @@
           </button>
         </div>
       </div>
+      <p v-if="downloadMessage" role="status">{{ downloadMessage }}</p>
     </div>
   </div>
 </template>
@@ -98,6 +100,9 @@
 defineProps({
   imageryDates: { type: Array, default: () => [] },
   selectedDate: { type: String, default: null },
+  queryMessage: { type: String, default: '' },
+  downloadMessage: { type: String, default: '' },
+  downloading: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
   showLabels: { type: Boolean, default: false },
   selectionMode: { type: Boolean, default: false },

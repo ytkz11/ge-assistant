@@ -2,7 +2,7 @@ import { XMLParser } from 'fast-xml-parser'
 
 const WMTS_CAPABILITIES_URL = 'https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/mapserver/wmts/1.0.0/wmtscapabilities.xml'
 
-let cachedLayers = null
+let layersRequest
 
 function parseCapabilities(xmlText) {
   const parser = new XMLParser({
@@ -29,7 +29,8 @@ function parseCapabilities(xmlText) {
     const title = layer?.['ows:Title'] || ''
     const identifier = layer?.['ows:Identifier'] || ''
     const format = layer?.['Format'] || ''
-    const resourceUrlObj = layer?.['ResourceURL']
+    const resources = [layer?.['ResourceURL']].flat().filter(Boolean)
+    const resourceUrlObj = resources.find(resource => resource.resourceType === 'tile') || resources[0]
     const resourceUrl = resourceUrlObj?.['template'] || ''
 
     const dateMatch = title.match(/\(Wayback (\d{4}-\d{2}-\d{2})\)/)
@@ -44,30 +45,30 @@ function parseCapabilities(xmlText) {
     }
 
     return { title, identifier, format, resourceUrl, date, tileMatrixSets }
-  }).filter(l => l.date && l.resourceUrl)
+  }).filter(l => l.date && /^https:\/\/wayback\.maptiles\.arcgis\.com\//i.test(l.resourceUrl)
+    && l.tileMatrixSets.includes('GoogleMapsCompatible'))
 }
 
-export async function fetchWaybackLayers() {
-  if (cachedLayers) return cachedLayers
-
-  try {
-    const resp = await fetch(WMTS_CAPABILITIES_URL)
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const xmlText = await resp.text()
-    cachedLayers = parseCapabilities(xmlText)
-    return cachedLayers
-  } catch (e) {
-    console.error('Failed to fetch Wayback capabilities:', e)
-    return []
-  }
+export function fetchWaybackLayers() {
+  layersRequest ??= (async () => {
+    const response = await fetch(WMTS_CAPABILITIES_URL, { signal: AbortSignal.timeout(20000) })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const layers = parseCapabilities(await response.text())
+    if (!layers.length) throw new Error('Wayback 目录为空或格式无效')
+    return layers
+  })().catch(error => {
+    layersRequest = undefined
+    throw error
+  })
+  return layersRequest
 }
 
 export function getWaybackTileUrl(layer, z, x, y) {
-  if (!layer || !layer.resourceUrl) return null
-  const layerIdMatch = layer.resourceUrl.match(/\/tile\/(\d+)\//)
-  const layerId = layerIdMatch ? layerIdMatch[1] : null
-  if (!layerId) return null
-  return `https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/GoogleMapsCompatible/MapServer/tile/${layerId}/${z}/${y}/${x}`
+  return layer?.resourceUrl
+    ?.replace(/\{TileMatrixSet\}/gi, 'GoogleMapsCompatible')
+    .replace(/\{TileMatrix\}/gi, z)
+    .replace(/\{TileRow\}/gi, y)
+    .replace(/\{TileCol\}/gi, x)
 }
 
 export function getWaybackDates(layers) {
@@ -77,26 +78,4 @@ export function getWaybackDates(layers) {
     if (layer.date) dateSet.add(layer.date)
   }
   return Array.from(dateSet).sort().reverse()
-}
-
-export function latLngToTile(lat, lng, zoom) {
-  const n = Math.pow(2, zoom)
-  const x = Math.floor((lng + 180) / 360 * n)
-  const latRad = lat * Math.PI / 180
-  const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n)
-  return { x, y }
-}
-
-export function tileLatLngBounds(tx, ty, zoom) {
-  const n = Math.pow(2, zoom)
-  const lonMin = tx / n * 360 - 180
-  const lonMax = (tx + 1) / n * 360 - 180
-  const latMinRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * (ty + 1) / n)))
-  const latMaxRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * ty / n)))
-  return {
-    west: lonMin,
-    east: lonMax,
-    south: latMinRad * 180 / Math.PI,
-    north: latMaxRad * 180 / Math.PI
-  }
 }

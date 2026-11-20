@@ -4,9 +4,10 @@
     <div
       v-if="selectionActive"
       class="selection-overlay"
-      @mousedown.prevent="onMouseDown"
-      @mousemove.prevent="onMouseMove"
-      @mouseup.prevent="onMouseUp"
+      @pointerdown.prevent="onMouseDown"
+      @pointermove.prevent="onMouseMove"
+      @pointerup.prevent="onMouseUp"
+      @pointercancel="cancelDrag"
     ></div>
     <div v-if="selRect" class="selection-rect" :class="{ done: selectionDone }" :style="selStyle"></div>
     <div v-if="selectionActive && !selectionDone" class="selection-hint">在地图上拖拽框选区域</div>
@@ -16,16 +17,21 @@
       <span>Zoom: {{ zoom }}</span>
     </div>
     <div v-if="selectedDate" class="map-date-badge">{{ selectedDate }}</div>
-    <div v-if="imageryDates.length > 0" class="tile-count">{{ imageryDates.length }} images available</div>
+    <div v-if="imageryDates.length > 0" class="tile-count">{{ imageryDates.length }} {{ provider === 'wayback' ? '个发布版本' : '个影像日期' }}</div>
     <div v-if="downloading" class="download-progress">
       <div class="progress-bar"><div class="progress-fill" :style="{ width: downloadProgress + '%' }"></div></div>
       <div class="progress-text">下载中... {{ downloadCurrent }}/{{ downloadTotal }} 瓦片</div>
     </div>
+    <label v-if="selectedDate" class="history-opacity">
+      历史影像不透明度
+      <input v-model.number="historyOpacity" type="range" min="0" max="1" step="0.1" />
+    </label>
     <div v-if="imageryDates.length > 1" class="time-slider-wrap">
       <span class="time-label">{{ sliderDate }}</span>
       <input
         type="range"
         class="time-slider"
+        aria-label="历史影像日期"
         :min="0"
         :max="imageryDates.length - 1"
         :value="sliderIndex"
@@ -37,12 +43,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import L from 'leaflet'
 import gcoord from 'gcoord'
-import { writeArrayBuffer } from 'geotiff'
-import { getWaybackTileUrl, tileLatLngBounds, latLngToTile } from '../esri-wayback'
-import { downloadGoogleTilePerTile, fetchDbRoot, getAvailableDates } from '../google-earth'
+import { getWaybackTileUrl } from '../esri-wayback'
+import { getExportGrid, geoTiffMetadata } from '../imagery-grid'
+import { downloadGoogleTilePerTile } from '../google-earth'
 
 const props = defineProps({
   selectedDate: { type: String, default: null },
@@ -63,6 +69,7 @@ let labelsLayer = null
 
 const center = ref({ lat: 39.9042, lng: 116.4074 })
 const zoom = ref(5)
+const historyOpacity = ref(1)
 
 const downloading = ref(false)
 const downloadProgress = ref(0)
@@ -113,9 +120,11 @@ const GCJ02_LABELS_URL = 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y
 
 function createLabelsLayer() {
   return L.tileLayer(GCJ02_LABELS_URL, {
-    maxZoom: 18,
+    maxZoom: 21,
+    maxNativeZoom: 18,
     subdomains: ['1', '2', '3', '4'],
     crossOrigin: true,
+    pane: 'labels',
     attribution: '高德标注'
   })
 }
@@ -132,7 +141,7 @@ function updateLabelsOffset() {
   }
 }
 
-function createGoogleHistoricalLayer(date, epoch) {
+function createGoogleHistoricalLayer(epoch) {
   if (DEV) {
     return L.tileLayer(`/gproxy/kh?v=188&tx={x},{y},{z}&n=404&ep=1&e=${epoch}`, { maxZoom: 21, opacity: 1.0 })
   }
@@ -141,17 +150,15 @@ function createGoogleHistoricalLayer(date, epoch) {
 }
 
 function createWaybackLayer(layer) {
-  if (!layer || !layer.resourceUrl) return null
-  const layerIdMatch = layer.resourceUrl.match(/\/tile\/(\d+)\//)
-  const layerId = layerIdMatch ? layerIdMatch[1] : null
-  if (!layerId) return null
-  return L.tileLayer(
-    `https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/GoogleMapsCompatible/MapServer/tile/${layerId}/{z}/{y}/{x}`,
-    { maxZoom: 20, tileSize: 256, crossOrigin: true, attribution: 'Esri World Atlas Wayback' }
-  )
+  const url = getWaybackTileUrl(layer, '{z}', '{x}', '{y}')
+  return url ? L.tileLayer(url, {
+    maxZoom: 21, maxNativeZoom: 20, crossOrigin: true, attribution: 'Esri World Atlas Wayback'
+  }) : null
 }
 
 function onMouseDown(e) {
+  if (!e.isPrimary || e.button !== 0) return
+  e.currentTarget.setPointerCapture(e.pointerId)
   isDragging = true
   selectionDone.value = false
   dragStartPx = { x: e.clientX, y: e.clientY }
@@ -160,7 +167,7 @@ function onMouseDown(e) {
 }
 
 function onMouseMove(e) {
-  if (!isDragging || !dragStartPx) return
+  if (!e.isPrimary || !isDragging || !dragStartPx) return
   const mapContainer = mapEl.value.getBoundingClientRect()
   const x = Math.min(dragStartPx.x, e.clientX) - mapContainer.left
   const y = Math.min(dragStartPx.y, e.clientY) - mapContainer.top
@@ -170,7 +177,8 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
-  if (!isDragging) return
+  if (!e.isPrimary || !isDragging) return
+  onMouseMove(e)
   isDragging = false
   if (!selRect.value || selRect.value.width < 5 || selRect.value.height < 5) {
     selRect.value = null
@@ -183,7 +191,13 @@ function onMouseUp(e) {
   emit('selection-complete', selBounds.value)
 }
 
+function cancelDrag() {
+  isDragging = false
+  if (!selectionDone.value) clearSelection()
+}
+
 function clearSelection() {
+  isDragging = false
   selRect.value = null
   selBounds.value = null
   selectionDone.value = false
@@ -203,121 +217,100 @@ function updateSelRectFromBounds() {
 }
 
 async function loadTileImage(url) {
-  try {
-    const response = await fetch(url, { referrerPolicy: 'no-referrer' })
-    if (!response.ok) return null
-    const blob = await response.blob()
-    return await createImageBitmap(blob)
-  } catch (e) {
-    return null
-  }
+  const response = await fetch(url, {
+    referrerPolicy: 'no-referrer',
+    signal: AbortSignal.timeout(15000)
+  })
+  if (!response.ok) return null
+  return { image: await createImageBitmap(await response.blob()) }
 }
 
-function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
+async function downloadTiles({ bounds, zoom: tileZoom, format, nearest, allowMissing }) {
+  if (downloading.value) throw new Error('已有下载任务')
+  const grid = getExportGrid(bounds, tileZoom)
+  if (!grid?.canExport) throw new Error('选区过大或无效，请缩小选区或降低缩放级别')
 
-function getTileUrl(provider, selectedDate, waybackLayers, tileZoom, x, y) {
-  if (provider === 'wayback' && selectedDate && waybackLayers.length > 0) {
-    const layer = waybackLayers.find(l => l.date === selectedDate)
-    if (layer) return getWaybackTileUrl(layer, tileZoom, x, y)
+  const { provider, selectedDate, waybackLayers } = props
+  const waybackLayer = waybackLayers.find(layer => layer.date === selectedDate)
+  if (provider === 'wayback' && !waybackLayer) throw new Error('请先选择 Wayback 版本')
+
+  const count = 2 ** tileZoom
+  function loadTile(column, row) {
+    const x = ((column % count) + count) % count
+    if (provider === 'wayback') {
+      return loadTileImage(getWaybackTileUrl(waybackLayer, tileZoom, x, row))
+    }
+    if (selectedDate) return downloadGoogleTilePerTile(tileZoom, x, row, selectedDate, nearest)
+    const host = (x + row) % 4
+    const prefix = DEV ? `/gproxy/mt${host}` : `https://mt${host}.google.com`
+    return loadTileImage(`${prefix}/vt/lyrs=s&x=${x}&y=${row}&z=${tileZoom}`)
   }
-  if (provider === 'google') {
-    const subdomain = ['0', '1', '2', '3'][Math.floor(Math.random() * 4)]
-    if (DEV) return `/gproxy/mt${subdomain}/vt/lyrs=s&x=${x}&y=${y}&z=${tileZoom}`
-    return `https://mt${subdomain}.google.com/vt/lyrs=s&x=${x}&y=${y}&z=${tileZoom}`
-  }
-  return null
-}
 
-async function loadGoogleHistoricalTile(tileZoom, x, y) {
-  try {
-    return await downloadGoogleTilePerTile(tileZoom, x, y, props.selectedDate)
-  } catch (e) {
-    console.warn('Google historical tile failed:', e)
-    return null
-  }
-}
-
-async function downloadTiles(bounds, tileZoom, format) {
-  console.log('downloadTiles called:', { provider: props.provider, selectedDate: props.selectedDate, waybackLayersCount: props.waybackLayers.length, bounds, tileZoom, format })
-
-  const tileNE = latLngToTile(bounds.north, bounds.east, tileZoom)
-  const tileSW = latLngToTile(bounds.south, bounds.west, tileZoom)
-  const tileSize = 256
-  const tilesX = tileNE.x - tileSW.x + 1
-  const tilesY = tileSW.y - tileNE.y + 1
-  const totalTiles = tilesX * tilesY
+  const canvas = document.createElement('canvas')
+  canvas.width = grid.width
+  canvas.height = grid.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('浏览器无法创建导出画布')
 
   downloading.value = true
   downloadProgress.value = 0
   downloadCurrent.value = 0
-  downloadTotal.value = totalTiles
+  downloadTotal.value = grid.total
+  let missing = 0
+  let substituted = 0
+  let nextTile = 0
+  const columns = grid.right - grid.left + 1
 
-  const canvas = document.createElement('canvas')
-  canvas.width = tilesX * tileSize
-  canvas.height = tilesY * tileSize
-  const ctx = canvas.getContext('2d')
-
-  const batchSize = 4
-  let loaded = 0
-
-  for (let ty = tileNE.y; ty <= tileSW.y; ty++) {
-    for (let tx = tileSW.x; tx <= tileNE.x; tx += batchSize) {
-      const batch = []
-      const batchEnd = Math.min(tx + batchSize, tileNE.x + 1)
-
-      for (let bx = tx; bx < batchEnd; bx++) {
-        const px = (bx - tileSW.x) * tileSize
-        const py = (ty - tileNE.y) * tileSize
-
-        if (props.provider === 'google' && props.selectedDate) {
-          batch.push({ px, py, useGoogle: true, z: tileZoom, x: bx, y: ty })
+  async function worker() {
+    while (nextTile < grid.total) {
+      const index = nextTile++
+      const x = index % columns
+      const y = Math.floor(index / columns)
+      try {
+        const tile = await loadTile(grid.left + x, grid.top + y)
+        if (tile) {
+          try {
+            ctx.drawImage(tile.image, x * 256, y * 256, 256, 256)
+            if (tile.substituted) substituted++
+          } finally {
+            tile.image.close()
+          }
         } else {
-          const url = getTileUrl(props.provider, props.selectedDate, props.waybackLayers, tileZoom, bx, ty)
-          if (url) batch.push({ url, px, py })
+          missing++
         }
+      } catch {
+        missing++
       }
-
-      const images = await Promise.all(batch.map(b => {
-        if (b.useGoogle) return loadGoogleHistoricalTile(b.z, b.x, b.y)
-        return loadTileImage(b.url)
-      }))
-
-      for (let i = 0; i < images.length; i++) {
-        if (images[i]) {
-          ctx.drawImage(images[i], batch[i].px, batch[i].py, tileSize, tileSize)
-        }
-        loaded++
-        downloadCurrent.value = loaded
-        downloadProgress.value = Math.round((loaded / totalTiles) * 100)
-      }
-      await delay(10)
+      downloadCurrent.value++
+      downloadProgress.value = Math.round(downloadCurrent.value / grid.total * 100)
     }
   }
 
-  if (format === 'tif') {
-    try {
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-      const values = new Uint8Array(imageData.data.buffer)
-      const swBounds = tileLatLngBounds(tileSW.x, tileSW.y, tileZoom)
-      const neBounds = tileLatLngBounds(tileNE.x, tileNE.y, tileZoom)
-      const metadata = {
-        height: canvas.height, width: canvas.width,
-        ModelTiepoint: [0, 0, 0, swBounds.west, neBounds.north, 0],
-        ModelPixelScale: [(neBounds.east - swBounds.west) / canvas.width, Math.abs((neBounds.north - swBounds.south) / canvas.height), 0],
-        SampleFormat: [1, 1, 1, 1], BitsPerSample: [8, 8, 8, 8],
-        PhotometricInterpretation: 2, Compression: 1,
-        StripByteCounts: [canvas.width * canvas.height * 4], RowsPerStrip: canvas.height,
-      }
-      const arrayBuffer = await writeArrayBuffer(values, metadata)
-      downloadBlob(new Blob([arrayBuffer], { type: 'image/tiff' }), `satellite_${props.selectedDate || 'area'}_z${tileZoom}.tif`)
-    } catch (e) {
-      console.error('TIF export failed, falling back to PNG:', e)
-      canvas.toBlob(blob => downloadBlob(blob, `satellite_${props.selectedDate || 'area'}_z${tileZoom}.png`), 'image/png')
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, grid.total) }, worker))
+    if (missing === grid.total || (missing && !allowMissing)) {
+      throw new Error(`${missing}/${grid.total} 块瓦片无法加载，未生成文件`)
     }
-  } else {
-    canvas.toBlob(blob => downloadBlob(blob, `satellite_${props.selectedDate || 'area'}_z${tileZoom}.png`), 'image/png')
+
+    let blob
+    if (format === 'tif') {
+      const { writeArrayBuffer } = await import('geotiff')
+      const pixels = new Uint8Array(ctx.getImageData(0, 0, grid.width, grid.height).data.buffer)
+      blob = new Blob([writeArrayBuffer(pixels, geoTiffMetadata(grid))], { type: 'image/tiff' })
+    } else {
+      blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(result => result ? resolve(result) : reject(new Error('PNG 编码失败')), 'image/png')
+      })
+    }
+
+    const suffix = [substituted ? 'mixed' : '', missing ? 'partial' : ''].filter(Boolean).join('_')
+    const filename = `satellite_${provider}_${selectedDate || 'current'}_z${tileZoom}${suffix ? '_' + suffix : ''}.${format}`
+    downloadBlob(blob, filename)
+    return { total: grid.total, missing, substituted }
+  } finally {
+    downloading.value = false
+    canvas.width = canvas.height = 0
   }
-  downloading.value = false
 }
 
 function downloadBlob(blob, filename) {
@@ -328,7 +321,7 @@ function downloadBlob(blob, filename) {
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+  setTimeout(() => URL.revokeObjectURL(url), 30000)
 }
 
 onMounted(async () => {
@@ -338,6 +331,7 @@ onMounted(async () => {
 
   satLayer = L.tileLayer(GOOGLE_SAT, { maxZoom: 21, subdomains: ['0', '1', '2', '3'], crossOrigin: true, attribution: 'Google Satellite' }).addTo(map)
 
+  map.createPane('labels').style.zIndex = '450'
   labelsLayer = createLabelsLayer()
   if (props.showLabels) { labelsLayer.addTo(map); updateLabelsOffset() }
 
@@ -353,8 +347,10 @@ onMounted(async () => {
 
   center.value = { lat: map.getCenter().lat, lng: map.getCenter().lng }
   zoom.value = map.getZoom()
-  emit('center-change', center.value)
+  emit('center-change', { ...center.value, zoom: zoom.value })
 })
+
+onBeforeUnmount(() => map?.remove())
 
 watch(() => props.selectionMode, (active) => {
   selectionActive.value = active
@@ -362,6 +358,7 @@ watch(() => props.selectionMode, (active) => {
     clearSelection()
     if (map) { map.dragging.disable(); map.doubleClickZoom.disable(); map.getContainer().style.cursor = 'crosshair' }
   } else {
+    cancelDrag()
     if (map) { map.dragging.enable(); map.doubleClickZoom.enable(); map.getContainer().style.cursor = '' }
   }
 })
@@ -376,9 +373,12 @@ watch(() => props.selectedDate, (newDate) => {
     if (layer) { historicalLayer = createWaybackLayer(layer); if (historicalLayer) historicalLayer.addTo(map) }
   } else if (props.provider === 'google' && props.imageryDates.length > 0) {
     const entry = props.imageryDates.find(d => d.date === newDate)
-    if (entry) { historicalLayer = createGoogleHistoricalLayer(newDate, entry.epoch || 0); historicalLayer.addTo(map) }
+    if (entry) { historicalLayer = createGoogleHistoricalLayer(entry.epoch || 0); historicalLayer.addTo(map) }
   }
+  historicalLayer?.setOpacity(historyOpacity.value)
 })
+
+watch(historyOpacity, opacity => historicalLayer?.setOpacity(opacity))
 
 watch(() => props.showLabels, (show) => {
   if (!map) return
@@ -397,6 +397,7 @@ defineExpose({ downloadTiles, clearSelection })
   inset: 0;
   z-index: 9999;
   cursor: crosshair;
+  touch-action: none;
 }
 
 .selection-rect {
@@ -427,6 +428,8 @@ defineExpose({ downloadTiles, clearSelection })
 .map-info { position: absolute; bottom: 12px; left: 12px; z-index: 1000; background: rgba(0,0,0,0.75); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; display: flex; gap: 16px; font-family: monospace; }
 .map-date-badge { position: absolute; top: 12px; right: 12px; z-index: 1000; background: rgba(0,120,255,0.9); color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 16px; font-weight: 600; font-family: monospace; }
 .tile-count { position: absolute; top: 12px; left: 12px; z-index: 1000; background: rgba(0,0,0,0.65); color: #aaa; padding: 6px 12px; border-radius: 6px; font-size: 11px; }
+
+.history-opacity { position: absolute; top: 52px; right: 12px; z-index: 1000; display: grid; padding: 6px 10px; background: #171923; color: white; border-radius: 6px; font-size: 12px; }
 
 .download-progress { position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%); z-index: 1001; background: rgba(0,0,0,0.9); padding: 12px 20px; border-radius: 8px; min-width: 200px; max-width: 90vw; }
 .progress-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; margin-bottom: 8px; }

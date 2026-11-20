@@ -1,3 +1,4 @@
+import { selectDatedTile } from './imagery-grid.js'
 import { inflate } from 'pako'
 
 const DEV = import.meta.env.DEV
@@ -20,6 +21,7 @@ const QUADTREE_PACKET = DEV
 
 let encryptionKey = null
 let rootEpoch = 0
+let rootRequest
 const packetCache = new Map()
 
 function xorEncode(key, data) {
@@ -144,10 +146,19 @@ function parseDbRootProto(bytes) {
   rootEpoch = 1
 }
 
-export async function fetchDbRoot() {
-  if (encryptionKey) return { encryptionKey, rootEpoch }
+export function fetchDbRoot() {
+  rootRequest ??= loadDbRoot().catch(error => {
+    rootRequest = undefined
+    throw error
+  })
+  return rootRequest
+}
 
-  const resp = await fetch(DBROOT_URL, { referrerPolicy: 'no-referrer' })
+async function loadDbRoot() {
+  const resp = await fetch(DBROOT_URL, {
+    referrerPolicy: 'no-referrer',
+    signal: AbortSignal.timeout(15000)
+  })
   if (!resp.ok) throw new Error(`dbRoot fetch failed: ${resp.status}`)
   const buf = await resp.arrayBuffer()
   const bytes = new Uint8Array(buf)
@@ -157,10 +168,9 @@ export async function fetchDbRoot() {
     throw new Error('Failed to parse dbRoot protobuf')
   }
 
+  const decrypted = xorEncode(outer.encryptionData, outer.dbrootData)
+  parseDbRootProto(inflate(decrypted))
   encryptionKey = outer.encryptionData
-  const decrypted = xorEncode(encryptionKey, outer.dbrootData)
-  const decompressed = inflate(decrypted)
-  parseDbRootProto(decompressed)
 
   return { encryptionKey, rootEpoch }
 }
@@ -331,7 +341,10 @@ function decodeQuadtreePacket(buf) {
 async function fetchAndDecrypt(url) {
   if (!encryptionKey) await fetchDbRoot()
 
-  const resp = await fetch(url, { referrerPolicy: 'no-referrer' })
+  const resp = await fetch(url, {
+    referrerPolicy: 'no-referrer',
+    signal: AbortSignal.timeout(15000)
+  })
   if (!resp.ok) return null
 
   let buf = await resp.arrayBuffer()
@@ -351,16 +364,17 @@ async function getQuadtreePacket(path, epoch) {
   if (packetCache.has(cacheKey)) return packetCache.get(cacheKey)
 
   const url = QUADTREE_PACKET.replace('{path}', path).replace('{epoch}', epoch)
-  const data = await fetchAndDecrypt(url)
-  if (!data) return null
-
-  try {
-    const packet = decodeQuadtreePacket(data)
-    packetCache.set(cacheKey, packet)
-    return packet
-  } catch {
-    return null
-  }
+  const request = fetchAndDecrypt(url)
+    .then(data => data ? decodeQuadtreePacket(data) : null)
+    .catch(error => {
+      if (packetCache.get(cacheKey) === request) packetCache.delete(cacheKey)
+      throw error
+    })
+  packetCache.set(cacheKey, request)
+  if (packetCache.size > 256) packetCache.delete(packetCache.keys().next().value)
+  const packet = await request
+  if (!packet && packetCache.get(cacheKey) === request) packetCache.delete(cacheKey)
+  return packet
 }
 
 async function traverseToLeaf(z, x, y) {
@@ -397,49 +411,6 @@ async function traverseToLeaf(z, x, y) {
   return currentNode
 }
 
-export async function getTileEpochAndDate(z, x, y, targetDate) {
-  const node = await traverseToLeaf(z, x, y)
-  if (!node) return null
-
-  const historyLayer = node.layers.find(l => l.type === 3)
-  if (!historyLayer || !historyLayer.datesLayer) {
-    const imageryLayer = node.layers.find(l => l.type === 0)
-    if (imageryLayer) {
-      return { epoch: imageryLayer.layerEpoch, dateHex: null, provider: 0 }
-    }
-    return null
-  }
-
-  const { datedTiles, sharedTileDate } = historyLayer.datesLayer
-
-  if (targetDate) {
-    for (const dt of datedTiles) {
-      const dateStr = jpegCommentDateToDate(dt.date)
-      if (dateStr === targetDate) {
-        return { epoch: dt.datedTileEpoch, dateHex: dt.date.toString(16), provider: dt.provider }
-      }
-    }
-  }
-
-  if (datedTiles.length > 0) {
-    const dt = datedTiles[datedTiles.length - 1]
-    const dateStr = jpegCommentDateToDate(dt.date)
-    return { epoch: dt.datedTileEpoch, dateHex: dt.date.toString(16), provider: dt.provider, date: dateStr }
-  }
-
-  if (sharedTileDate) {
-    const dateStr = jpegCommentDateToDate(sharedTileDate)
-    return { epoch: historyLayer.layerEpoch, dateHex: null, provider: 0, date: dateStr }
-  }
-
-  const imageryLayer = node.layers.find(l => l.type === 0)
-  if (imageryLayer) {
-    return { epoch: imageryLayer.layerEpoch, dateHex: null, provider: 0 }
-  }
-
-  return null
-}
-
 export async function getAvailableDates(z, x, y) {
   const node = await traverseToLeaf(z, x, y)
   if (!node) return []
@@ -473,64 +444,24 @@ export async function getAvailableDates(z, x, y) {
     })
   }
 
-  return dates.sort((a, b) => a.date.localeCompare(b.date))
+  return [...new Map(dates.map(entry => [entry.date, entry])).values()]
+    .sort((a, b) => b.date.localeCompare(a.date))
 }
 
-export async function downloadGoogleHistoricalTile(tileZoom, x, y, epoch, dateHex) {
-  if (!encryptionKey) await fetchDbRoot()
+export async function downloadGoogleTilePerTile(z, x, y, targetDate, nearest = false) {
+  const dates = await getAvailableDates(z, x, y)
+  const tile = selectDatedTile(dates, targetDate, nearest)
+  if (!tile) return null
 
-  const path = tileToQuadTreePath(tileZoom, x, y)
-
-  if (dateHex) {
-    const url = FLATFILE_TM.replace('{path}', path).replace('{epoch}', epoch).replace('{dateHex}', dateHex)
-    const data = await fetchAndDecrypt(url)
-    if (data) {
-      try {
-        return await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
-      } catch {}
-    }
-  }
-
-  const defaultUrl = FLATFILE_DEFAULT.replace('{path}', path).replace('{epoch}', epoch)
-  const data = await fetchAndDecrypt(defaultUrl)
+  const path = tileToQuadTreePath(z, x, y)
+  const template = tile.dateHex ? FLATFILE_TM : FLATFILE_DEFAULT
+  const url = template.replace('{path}', path).replace('{epoch}', tile.epoch)
+    .replace('{dateHex}', tile.dateHex)
+  const data = await fetchAndDecrypt(url)
   if (!data) return null
 
-  try {
-    return await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
-  } catch {
-    return null
-  }
-}
-
-export async function downloadGoogleTilePerTile(tileZoom, x, y, targetDate) {
-  if (!encryptionKey) await fetchDbRoot()
-
-  const tileInfo = await getTileEpochAndDate(tileZoom, x, y, targetDate)
-  if (!tileInfo) return null
-
-  const path = tileToQuadTreePath(tileZoom, x, y)
-
-  if (tileInfo.dateHex) {
-    const url = FLATFILE_TM.replace('{path}', path).replace('{epoch}', tileInfo.epoch).replace('{dateHex}', tileInfo.dateHex)
-    const data = await fetchAndDecrypt(url)
-    if (data) {
-      try {
-        return await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
-      } catch {}
-    }
-  }
-
-  if (tileInfo.epoch) {
-    const defaultUrl = FLATFILE_DEFAULT.replace('{path}', path).replace('{epoch}', tileInfo.epoch)
-    const data = await fetchAndDecrypt(defaultUrl)
-    if (data) {
-      try {
-        return await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
-      } catch {}
-    }
-  }
-
-  return null
+  const image = await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
+  return { image, substituted: tile.date !== targetDate }
 }
 
 export function getGoogleTileUrl(tileZoom, x, y, epoch) {

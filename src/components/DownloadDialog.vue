@@ -36,7 +36,7 @@
                 <span>级别</span>
                 <span>瓦片数</span>
                 <span>像素尺寸</span>
-                <span>预估大小</span>
+                <span>RGBA 大小</span>
               </div>
               <div
                 v-for="z in zoomRange"
@@ -54,9 +54,23 @@
           </div>
         </div>
 
+        <div class="export-options">
+          <label>导出格式
+            <select v-model="format">
+              <option value="tif">GeoTIFF (EPSG:3857)</option>
+              <option value="png">PNG</option>
+            </select>
+          </label>
+          <label v-if="provider === 'google' && selectedDate">
+            <input v-model="nearest" type="checkbox" /> 用最接近的日期替补缺失日期
+          </label>
+          <label><input v-model="allowMissing" type="checkbox" /> 允许缺失瓦片保留透明</label>
+          <p v-if="!grid?.canExport" role="status">请降低缩放级别。每次最多导出 256 块瓦片，单边最多 8192 像素。</p>
+        </div>
+
         <div class="modal-footer">
           <button class="btn cancel" @click="$emit('cancel')">取消</button>
-          <button class="btn confirm" @click="confirm" :disabled="loading">
+          <button class="btn confirm" @click="confirm" :disabled="loading || !grid?.canExport">
             {{ loading ? '下载中...' : '开始下载' }}
           </button>
         </div>
@@ -66,8 +80,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
-import { latLngToTile } from '../esri-wayback'
+import { ref, computed, watch } from 'vue'
+import { getExportGrid } from '../imagery-grid'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -80,6 +94,10 @@ const props = defineProps({
 const emit = defineEmits(['cancel', 'confirm'])
 
 const selectedZoom = ref(18)
+const format = ref('tif')
+const nearest = ref(false)
+const allowMissing = ref(false)
+const grid = computed(() => getExportGrid(props.bounds, selectedZoom.value))
 const minZoom = 1
 const maxZoom = computed(() => props.provider === 'wayback' ? 20 : 21)
 
@@ -91,29 +109,25 @@ const zoomRange = computed(() => {
   return range
 })
 
-function getTileCoords(z) {
-  const ne = latLngToTile(props.bounds.north, props.bounds.east, z)
-  const sw = latLngToTile(props.bounds.south, props.bounds.west, z)
-  const tilesX = ne.x - sw.x + 1
-  const tilesY = sw.y - ne.y + 1
-  return { tilesX, tilesY, total: tilesX * tilesY }
-}
+watch(() => props.visible, visible => {
+  if (!visible) return
+  selectedZoom.value = Math.min(selectedZoom.value, maxZoom.value)
+  while (selectedZoom.value > minZoom && !grid.value?.canExport) selectedZoom.value--
+})
 
 function getTileCount(z) {
-  const { total } = getTileCoords(z)
-  return `${total} 块`
+  return `${getExportGrid(props.bounds, z)?.total ?? '—'} 块`
 }
 
 function getImageSize(z) {
-  const { tilesX, tilesY } = getTileCoords(z)
-  const px = tilesX * 256
-  const py = tilesY * 256
-  return `${px} x ${py}`
+  const candidate = getExportGrid(props.bounds, z)
+  return candidate ? `${candidate.width} × ${candidate.height}` : '—'
 }
 
 function getFileSize(z) {
-  const { total } = getTileCoords(z)
-  const bytes = total * 256 * 256 * 3
+  const candidate = getExportGrid(props.bounds, z)
+  if (!candidate) return '—'
+  const bytes = candidate.width * candidate.height * 4
   if (bytes < 1024 * 1024) {
     return `${(bytes / 1024).toFixed(1)} KB`
   } else if (bytes < 1024 * 1024 * 1024) {
@@ -124,15 +138,20 @@ function getFileSize(z) {
 }
 
 function confirm() {
+  if (!grid.value?.canExport || props.loading) return
   emit('confirm', {
     zoom: selectedZoom.value,
     bounds: props.bounds,
-    tileSize: getTileCoords(selectedZoom.value)
+    format: format.value,
+    nearest: nearest.value,
+    allowMissing: allowMissing.value
   })
 }
 </script>
 
 <style scoped>
+.export-options { display: grid; gap: 8px; padding: 12px 18px; }
+.export-options p { color: #ffc107; }
 .modal-overlay {
   position: fixed;
   inset: 0;

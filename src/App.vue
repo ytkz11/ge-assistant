@@ -12,13 +12,16 @@
       @selection-complete="handleSelectionComplete"
       @update:selected-date="selectedDate = $event"
     />
-    <button class="menu-toggle" @click="sidebarOpen = !sidebarOpen">
+    <button class="menu-toggle" :aria-expanded="sidebarOpen" aria-label="影像面板" @click="sidebarOpen = !sidebarOpen">
       <span class="menu-icon">{{ sidebarOpen ? '\u2715' : '\u2630' }}</span>
     </button>
     <Sidebar
       :imagery-dates="imageryDates"
       :selected-date="selectedDate"
       :loading="loading"
+      :query-message="queryMessage"
+      :download-message="downloadMessage"
+      :downloading="downloading"
       :show-labels="showLabels"
       :selection-mode="selectionMode"
       :selection-region="selectionRegion"
@@ -51,7 +54,8 @@ import MapView from './components/MapView.vue'
 import Sidebar from './components/Sidebar.vue'
 import DownloadDialog from './components/DownloadDialog.vue'
 import { fetchWaybackLayers, getWaybackDates } from './esri-wayback'
-import { fetchDbRoot, getAvailableDates } from './google-earth'
+import { getAvailableDates } from './google-earth'
+import { latLngToTile } from './imagery-grid'
 
 const mapRef = ref(null)
 const selectedDate = ref(null)
@@ -61,7 +65,10 @@ const currentCenter = ref({ lat: 39.9042, lng: 116.4074, zoom: 5 })
 const showLabels = ref(true)
 const selectionMode = ref(false)
 const selectionRegion = ref(null)
-const provider = ref('google')
+const provider = ref('wayback')
+const queryMessage = ref('')
+const downloadMessage = ref('')
+let queryVersion = 0
 const waybackLayers = ref([])
 const showDownloadDialog = ref(false)
 const downloading = ref(false)
@@ -74,6 +81,7 @@ function handleCenterChange(coords) {
 function handleSelectionComplete(region) {
   selectionRegion.value = region
   selectionMode.value = false
+  sidebarOpen.value = true
 }
 
 function toggleSelection() {
@@ -86,21 +94,26 @@ function toggleSelection() {
   }
 }
 
-function handleDownloadConfirm(params) {
+async function handleDownloadConfirm(params) {
+  if (downloading.value || !mapRef.value) return
   showDownloadDialog.value = false
   downloading.value = true
-
-  if (mapRef.value) {
-    mapRef.value.downloadTiles(params.bounds, params.zoom, 'tif').finally(() => {
-      downloading.value = false
-    })
-  } else {
+  downloadMessage.value = ''
+  try {
+    const { total, missing, substituted } = await mapRef.value.downloadTiles(params)
+    downloadMessage.value = `已导出 ${total - missing}/${total} 块瓦片，日期替补 ${substituted} 块。`
+  } catch (error) {
+    downloadMessage.value = error.message
+  } finally {
     downloading.value = false
   }
 }
 
 function handleProviderChange(newProvider) {
   if (provider.value === newProvider) return
+  queryVersion++
+  loading.value = false
+  queryMessage.value = ''
   provider.value = newProvider
   selectedDate.value = null
   imageryDates.value = []
@@ -116,34 +129,37 @@ function clearSelection() {
 }
 
 async function handleQuery() {
+  const version = ++queryVersion
   loading.value = true
+  queryMessage.value = ''
   selectedDate.value = null
-
+  imageryDates.value = []
   try {
     if (provider.value === 'google') {
-      await fetchDbRoot()
-      const z = Math.min(currentCenter.value.zoom || 10, 12)
-      const n = Math.pow(2, z)
-      const x = Math.floor((currentCenter.value.lng + 180) / 360 * n)
-      const latRad = currentCenter.value.lat * Math.PI / 180
-      const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n)
-      const dates = await getAvailableDates(z, x, y)
+      const { lat, lng, zoom } = currentCenter.value
+      const { x, y } = latLngToTile(lat, lng, zoom)
+      const dates = await getAvailableDates(zoom, x, y)
+      if (version !== queryVersion) return
       imageryDates.value = dates
+      queryMessage.value = dates.length
+        ? `地图中心瓦片 · 缩放级别 ${zoom}`
+        : `地图中心瓦片在级别 ${zoom} 未返回历史日期。`
     } else {
       const layers = await fetchWaybackLayers()
+      if (version !== queryVersion) return
       waybackLayers.value = layers
-      const dates = getWaybackDates(layers)
-      imageryDates.value = dates.map(d => ({ date: d }))
+      imageryDates.value = getWaybackDates(layers).map(date => ({ date }))
+      queryMessage.value = '日期为 Wayback 发布批次。实际拍摄日期随位置而变化。'
     }
-  } catch (e) {
-    console.error('Query failed:', e)
-    imageryDates.value = []
-    waybackLayers.value = []
+    selectedDate.value = imageryDates.value[0]?.date ?? null
+  } catch (error) {
+    if (version !== queryVersion) return
+    console.error('Imagery query failed:', error)
+    queryMessage.value = provider.value === 'google'
+      ? 'Google Earth 历史服务查询失败。浏览器跨域受限时，可切换到 Esri Wayback。'
+      : 'Wayback 目录加载失败，请重试。'
   } finally {
-    loading.value = false
-    if (imageryDates.value.length > 0) {
-      selectedDate.value = imageryDates.value[0].date
-    }
+    if (version === queryVersion) loading.value = false
   }
 }
 </script>
