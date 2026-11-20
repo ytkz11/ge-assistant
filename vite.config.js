@@ -19,15 +19,15 @@ export default defineConfig({
     open: true,
     proxy: {
       ...googleMtProxy,
-      '/gproxy/kh': {
-        target: 'https://khmdb.google.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace('/gproxy/kh', '/kh')
-      },
       '/gproxy/dbroot': {
         target: 'https://khmdb.google.com',
         changeOrigin: true,
-        rewrite: () => '/dbRoot.v5?&hl=en&gl=us&output=proto'
+        rewrite: () => '/dbRoot.v5?db=tm&hl=en&gl=us&output=proto'
+      },
+      '/gproxy/earth-default': {
+        target: 'https://kh.google.com',
+        changeOrigin: true,
+        rewrite: path => path.replace('/gproxy/earth-default', '/flatfile')
       },
       '/gproxy/flatfile': {
         target: 'https://khmdb.google.com',

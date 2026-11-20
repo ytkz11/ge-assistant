@@ -82,8 +82,9 @@
           {{ selectionRegion.south.toFixed(4) }}, {{ selectionRegion.west.toFixed(4) }}<br/>
           {{ selectionRegion.north.toFixed(4) }}, {{ selectionRegion.east.toFixed(4) }}
         </div>
+        <p v-if="!selectedDate">选择历史日期或发布版本后即可下载。</p>
         <div class="region-actions">
-          <button class="download-btn" :disabled="downloading || (provider === 'wayback' && !selectedDate)" @click="$emit('open-download')">
+          <button class="download-btn" :disabled="downloading || !selectedDate" @click="$emit('open-download')">
             选择下载参数
           </button>
           <button class="clear-btn" @click="$emit('clear-selection')">

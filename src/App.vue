@@ -55,7 +55,7 @@ import Sidebar from './components/Sidebar.vue'
 import DownloadDialog from './components/DownloadDialog.vue'
 import { fetchWaybackLayers, getWaybackDates } from './esri-wayback'
 import { getAvailableDates } from './google-earth'
-import { latLngToTile } from './imagery-grid'
+import { latLngToEarthTile } from './imagery-grid'
 
 const mapRef = ref(null)
 const selectedDate = ref(null)
@@ -137,12 +137,12 @@ async function handleQuery() {
   try {
     if (provider.value === 'google') {
       const { lat, lng, zoom } = currentCenter.value
-      const { x, y } = latLngToTile(lat, lng, zoom)
+      const { x, y } = latLngToEarthTile(lat, lng, zoom)
       const dates = await getAvailableDates(zoom, x, y)
       if (version !== queryVersion) return
       imageryDates.value = dates
       queryMessage.value = dates.length
-        ? `地图中心瓦片 · 缩放级别 ${zoom}`
+        ? `地图中心瓦片 · 缩放级别 ${zoom}。所选日期用于导出，地图仍显示参考底图。`
         : `地图中心瓦片在级别 ${zoom} 未返回历史日期。`
     } else {
       const layers = await fetchWaybackLayers()

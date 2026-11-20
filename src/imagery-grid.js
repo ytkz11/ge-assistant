@@ -13,26 +13,41 @@ export function latLngToTile(lat, lng, zoom) {
   }
 }
 
-export function getExportGrid({ north, south, west, east }, zoom) {
+export function latLngToEarthTile(lat, lng, zoom) {
+  const count = 2 ** zoom
+  const x = Math.floor((lng + 180) / 360 * count)
+  const y = count - 1 - Math.floor((lat + 180) / 360 * count)
+  return { x: ((x % count) + count) % count, y }
+}
+
+export function getExportGrid({ north, south, west, east }, zoom, provider = 'wayback') {
   if (![north, south, west, east].every(Number.isFinite) ||
       north <= south || east <= west || east - west > 360 ||
       !Number.isInteger(zoom) || zoom < 1 || zoom > 21) return null
 
   const count = 2 ** zoom
-  const { y: top } = latLngToTile(north, west, zoom)
-  const { y: bottom } = latLngToTile(south, west, zoom)
+  const geographic = provider === 'google'
+  if (geographic && (north > 90 || south < -90)) return null
+  const top = geographic
+    ? Math.floor((180 - north) / 360 * count)
+    : latLngToTile(north, west, zoom).y
+  const bottom = geographic
+    ? Math.min(count - 1, Math.ceil((180 - south) / 360 * count) - 1)
+    : latLngToTile(south, west, zoom).y
   // Keep columns unwrapped so selections crossing 180 degrees stay contiguous.
   const left = Math.floor((west + 180) / 360 * count)
   const right = Math.ceil((east + 180) / 360 * count) - 1
   const width = (right - left + 1) * TILE_SIZE
   const height = (bottom - top + 1) * TILE_SIZE
   const total = (width / TILE_SIZE) * (height / TILE_SIZE)
-  const scale = 2 * HALF_WORLD_METRES / (count * TILE_SIZE)
+  const halfWorld = geographic ? 180 : HALF_WORLD_METRES
+  const scale = 2 * halfWorld / (count * TILE_SIZE)
   return {
     left, right, top, bottom, width, height, total, scale,
+    geographic,
     canExport: total <= 256 && width <= 8192 && height <= 8192,
-    west: left * TILE_SIZE * scale - HALF_WORLD_METRES,
-    north: HALF_WORLD_METRES - top * TILE_SIZE * scale
+    west: left * TILE_SIZE * scale - halfWorld,
+    north: halfWorld - top * TILE_SIZE * scale
   }
 }
 
@@ -42,10 +57,10 @@ export function geoTiffMetadata(grid) {
     height: grid.height,
     ModelTiepoint: [0, 0, 0, grid.west, grid.north, 0],
     ModelPixelScale: [grid.scale, grid.scale, 0],
-    GTModelTypeGeoKey: 1,
     GTRasterTypeGeoKey: 1,
-    ProjectedCSTypeGeoKey: 3857,
-    ProjLinearUnitsGeoKey: 9001,
+    ...(grid.geographic
+      ? { GTModelTypeGeoKey: 2, GeographicTypeGeoKey: 4326 }
+      : { GTModelTypeGeoKey: 1, ProjectedCSTypeGeoKey: 3857, ProjLinearUnitsGeoKey: 9001 }),
     PhotometricInterpretation: 2,
     BitsPerSample: [8, 8, 8, 8],
     SamplesPerPixel: 4,

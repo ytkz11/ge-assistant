@@ -1,14 +1,14 @@
 import { selectDatedTile } from './imagery-grid.js'
 import { inflate } from 'pako'
 
-const DEV = import.meta.env.DEV
+const DEV = import.meta.env?.DEV
 
 const DBROOT_URL = DEV
   ? '/gproxy/dbroot'
-  : 'https://khmdb.google.com/dbRoot.v5?&hl=en&gl=us&output=proto'
+  : 'https://khmdb.google.com/dbRoot.v5?db=tm&hl=en&gl=us&output=proto'
 
 const FLATFILE_DEFAULT = DEV
-  ? '/gproxy/flatfile?f1-{path}-i.{epoch}'
+  ? '/gproxy/earth-default?f1-{path}-i.{epoch}'
   : 'https://kh.google.com/flatfile?f1-{path}-i.{epoch}'
 
 const FLATFILE_TM = DEV
@@ -16,8 +16,8 @@ const FLATFILE_TM = DEV
   : 'https://khmdb.google.com/flatfile?db=tm&f1-{path}-i.{epoch}-{dateHex}'
 
 const QUADTREE_PACKET = DEV
-  ? '/gproxy/flatfile?q2-{path}-q.{epoch}'
-  : 'https://kh.google.com/flatfile?q2-{path}-q.{epoch}'
+  ? '/gproxy/flatfile?db=tm&qp-{path}-q.{epoch}'
+  : 'https://khmdb.google.com/flatfile?db=tm&qp-{path}-q.{epoch}'
 
 let encryptionKey = null
 let rootEpoch = 0
@@ -65,33 +65,26 @@ function readField(buf, pos) {
     const len = decodeVarint(buf, pos)
     const data = buf.slice(pos + len.bytesRead, pos + len.bytesRead + len.value)
     return { fieldNumber, wireType, value: data, bytesRead: tag.bytesRead + len.bytesRead + len.value }
+  } else if (wireType === 3) {
+    const start = pos
+    while (pos < buf.length) {
+      const field = readField(buf, pos)
+      if (!field) break
+      if (field.wireType === 4) {
+        if (field.fieldNumber !== fieldNumber) break
+        return { fieldNumber, wireType, value: buf.subarray(start, pos), bytesRead: pos - start + tag.bytesRead + field.bytesRead }
+      }
+      pos += field.bytesRead
+    }
+    throw new Error('Invalid Google Earth protobuf group')
+  } else if (wireType === 4) {
+    return { fieldNumber, wireType, bytesRead: tag.bytesRead }
   } else if (wireType === 5) {
     return { fieldNumber, wireType, value: null, bytesRead: tag.bytesRead + 4 }
   } else if (wireType === 1) {
     return { fieldNumber, wireType, value: null, bytesRead: tag.bytesRead + 8 }
   }
   return null
-}
-
-function skipField(buf, pos) {
-  if (pos >= buf.length) return pos
-  const tag = decodeVarint(buf, pos)
-  if (tag.bytesRead === 0) return pos
-  const wireType = tag.value & 0x07
-  pos += tag.bytesRead
-
-  if (wireType === 0) {
-    const val = decodeVarint(buf, pos)
-    return pos + val.bytesRead
-  } else if (wireType === 2) {
-    const len = decodeVarint(buf, pos)
-    return pos + len.bytesRead + len.value
-  } else if (wireType === 5) {
-    return pos + 4
-  } else if (wireType === 1) {
-    return pos + 8
-  }
-  return pos
 }
 
 function parseEncryptedDbRoot(bytes) {
@@ -104,46 +97,42 @@ function parseEncryptedDbRoot(bytes) {
     if (!field) break
     pos += field.bytesRead
     if (field.wireType === 2) {
-      if (field.fieldNumber === 1) encryptionData = field.value
-      else if (field.fieldNumber === 2) dbrootData = field.value
+      if (field.fieldNumber === 2) encryptionData = field.value
+      else if (field.fieldNumber === 3) dbrootData = field.value
     }
   }
 
   return { encryptionData, dbrootData }
 }
 
-function parseDbRootProto(bytes) {
-  let pos = 0
+function decompressPacket(bytes) {
+  if (bytes.length < 8) throw new Error('Truncated Google Earth packet')
+  const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const magic = header.getUint32(0, true)
+  if (magic !== 0x7468dead && magic !== 0xadde6874) {
+    throw new Error('Invalid Google Earth packet header')
+  }
+  const payload = inflate(bytes.subarray(8))
+  if (payload.length !== header.getUint32(4, magic === 0x7468dead)) {
+    throw new Error('Invalid Google Earth packet size')
+  }
+  return payload
+}
 
-  while (pos < bytes.length) {
+function readRootEpoch(bytes) {
+  for (let pos = 0; pos < bytes.length;) {
     const field = readField(bytes, pos)
     if (!field) break
     pos += field.bytesRead
-
-    if (field.fieldNumber === 1 && field.wireType === 2) {
-      const subPos = 0
-      let subField = readField(field.value, subPos)
-      if (subField && subField.wireType === 0) {
-        rootEpoch = subField.value
-        return
-      }
-    }
-
-    if (field.wireType === 2) {
-      let subPos = 0
-      while (subPos < field.value.length) {
-        const subField = readField(field.value, subPos)
-        if (!subField) break
-        subPos += subField.bytesRead
-        if (subField.fieldNumber === 1 && subField.wireType === 0 && subField.value > 1000) {
-          rootEpoch = subField.value
-          return
-        }
-      }
+    if (field.fieldNumber !== 13 || field.wireType !== 2) continue
+    for (let offset = 0; offset < field.value.length;) {
+      const version = readField(field.value, offset)
+      if (!version) break
+      offset += version.bytesRead
+      if (version.fieldNumber === 1 && version.wireType === 0 && version.value > 0) return version.value
     }
   }
-
-  rootEpoch = 1
+  throw new Error('Missing Google Earth quadtree version')
 }
 
 export function fetchDbRoot() {
@@ -169,33 +158,28 @@ async function loadDbRoot() {
   }
 
   const decrypted = xorEncode(outer.encryptionData, outer.dbrootData)
-  parseDbRootProto(inflate(decrypted))
+  rootEpoch = readRootEpoch(decompressPacket(decrypted))
   encryptionKey = outer.encryptionData
 
   return { encryptionKey, rootEpoch }
 }
 
-function tileToQuadTreePath(z, x, y) {
+export function tileToQuadTreePath(z, x, y) {
   let path = '0'
-  for (let i = z - 1; i >= 0; i--) {
-    const row = (y >> i) & 1
-    const col = (x >> i) & 1
-    if (row === 0) {
-      path += col === 0 ? '0' : '1'
-    } else {
-      path += col === 0 ? '3' : '2'
-    }
+  for (let bit = z - 1; bit >= 0; bit--) {
+    const row = 1 - ((y >> bit) & 1)
+    const col = (x >> bit) & 1
+    path += (row << 1) | (row ^ col)
   }
   return path
 }
 
-function latLngToQuadTree(lat, lng, level) {
-  const n = Math.pow(2, level)
-  let x = Math.floor((lng + 180) / 360 * n)
-  let y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n)
-  x = Math.min(Math.max(x, 0), n - 1)
-  y = Math.min(Math.max(y, 0), n - 1)
-  return tileToQuadTreePath(level, x, y)
+export function packetIndex(path) {
+  const root = path.length <= 4
+  const offset = root ? 0 : Math.floor((path.length - 1) / 4) * 4
+  let index = 0
+  for (let i = offset + 1; i < path.length; i++) index = index * 4 + Number(path[i]) + 1
+  return root ? index : index + Number(path[offset]) * 85 + 1
 }
 
 function jpegCommentDateToDate(val) {
@@ -258,7 +242,6 @@ function decodeQuadtreeLayer(buf) {
 function decodeImageryDates(buf) {
   let pos = 0
   let datedTiles = []
-  let sharedTileDate = 0
 
   while (pos < buf.length) {
     const field = readField(buf, pos)
@@ -267,12 +250,10 @@ function decodeImageryDates(buf) {
 
     if (field.fieldNumber === 1 && field.wireType === 2) {
       datedTiles.push(decodeDatedTile(field.value))
-    } else if (field.fieldNumber === 2 && field.wireType === 0) {
-      sharedTileDate = field.value
     }
   }
 
-  return { datedTiles, sharedTileDate }
+  return { datedTiles }
 }
 
 function decodeDatedTile(buf) {
@@ -330,7 +311,7 @@ function decodeQuadtreePacket(buf) {
 
     if (field.fieldNumber === 1 && field.wireType === 0) {
       packetEpoch = field.value
-    } else if (field.fieldNumber === 2 && field.wireType === 2) {
+    } else if (field.fieldNumber === 2 && field.wireType === 3) {
       sparseNodes.push(decodeSparseNode(field.value))
     }
   }
@@ -345,18 +326,10 @@ async function fetchAndDecrypt(url) {
     referrerPolicy: 'no-referrer',
     signal: AbortSignal.timeout(15000)
   })
-  if (!resp.ok) return null
+  if (resp.status === 404) return null
+  if (!resp.ok) throw new Error(`Google Earth HTTP ${resp.status}`)
 
-  let buf = await resp.arrayBuffer()
-  let bytes = new Uint8Array(buf)
-
-  bytes = xorEncode(encryptionKey, bytes)
-
-  try {
-    return inflate(bytes)
-  } catch {
-    return bytes
-  }
+  return xorEncode(encryptionKey, new Uint8Array(await resp.arrayBuffer()))
 }
 
 async function getQuadtreePacket(path, epoch) {
@@ -365,7 +338,7 @@ async function getQuadtreePacket(path, epoch) {
 
   const url = QUADTREE_PACKET.replace('{path}', path).replace('{epoch}', epoch)
   const request = fetchAndDecrypt(url)
-    .then(data => data ? decodeQuadtreePacket(data) : null)
+    .then(data => data ? decodeQuadtreePacket(decompressPacket(data)) : null)
     .catch(error => {
       if (packetCache.get(cacheKey) === request) packetCache.delete(cacheKey)
       throw error
@@ -380,35 +353,17 @@ async function getQuadtreePacket(path, epoch) {
 async function traverseToLeaf(z, x, y) {
   await fetchDbRoot()
 
-  let currentPacket = await getQuadtreePacket('0', rootEpoch)
-  if (!currentPacket) return null
-
-  let currentNode = null
-
-  for (let level = 0; level < z; level++) {
-    const bit = z - 1 - level
-    const row = (y >> bit) & 1
-    const col = (x >> bit) & 1
-    let childIndex
-    if (row === 0) {
-      childIndex = col === 0 ? 0 : 1
-    } else {
-      childIndex = col === 0 ? 3 : 2
-    }
-
-    const sparseNode = currentPacket.sparseNodes.find(n => n.index === childIndex)
-    if (!sparseNode || !sparseNode.node) break
-
-    currentNode = sparseNode.node
-
-    if (currentNode.cacheNodeEpoch === 0) break
-
-    const childPath = tileToQuadTreePath(level + 1, x >> (z - 1 - level), y >> (z - 1 - level))
-    currentPacket = await getQuadtreePacket(childPath, currentNode.cacheNodeEpoch)
-    if (!currentPacket) break
+  const path = tileToQuadTreePath(z, x, y)
+  let packet = await getQuadtreePacket('0', rootEpoch)
+  if (!packet) throw new Error('Google Earth Time Machine root packet unavailable')
+  for (let length = 4; length < path.length; length += 4) {
+    const prefix = path.slice(0, length)
+    const parent = packet.sparseNodes.find(item => item.index === packetIndex(prefix))?.node
+    if (!parent?.cacheNodeEpoch) return null
+    packet = await getQuadtreePacket(prefix, parent.cacheNodeEpoch)
+    if (!packet) return null
   }
-
-  return currentNode
+  return packet.sparseNodes.find(item => item.index === packetIndex(path))?.node ?? null
 }
 
 export async function getAvailableDates(z, x, y) {
@@ -418,57 +373,35 @@ export async function getAvailableDates(z, x, y) {
   const historyLayer = node.layers.find(l => l.type === 3)
   if (!historyLayer || !historyLayer.datesLayer) return []
 
-  const dates = []
-  const { datedTiles, sharedTileDate } = historyLayer.datesLayer
-
-  if (sharedTileDate) {
-    const dateStr = jpegCommentDateToDate(sharedTileDate)
-    if (dateStr) {
-      dates.push({
-        date: dateStr,
-        epoch: historyLayer.layerEpoch,
-        provider: 0,
-        dateHex: null
-      })
-    }
+  const dates = new Map()
+  const defaultLayer = node.layers.find(layer => layer.type === 0)
+  for (const entry of historyLayer.datesLayer.datedTiles) {
+    if (entry.date <= 545) continue
+    const date = jpegCommentDateToDate(entry.date)
+    const epoch = entry.provider ? entry.datedTileEpoch : defaultLayer?.layerEpoch
+    if (!date || !epoch) continue
+    dates.set(date, { date, epoch, dateHex: entry.provider ? entry.date.toString(16) : null })
   }
-
-  for (const dt of datedTiles) {
-    const dateStr = jpegCommentDateToDate(dt.date)
-    if (!dateStr) continue
-    dates.push({
-      date: dateStr,
-      epoch: dt.datedTileEpoch,
-      provider: dt.provider,
-      dateHex: dt.date.toString(16)
-    })
-  }
-
-  return [...new Map(dates.map(entry => [entry.date, entry])).values()]
-    .sort((a, b) => b.date.localeCompare(a.date))
+  return [...dates.values()].sort((a, b) => b.date.localeCompare(a.date))
 }
 
 export async function downloadGoogleTilePerTile(z, x, y, targetDate, nearest = false) {
   const dates = await getAvailableDates(z, x, y)
-  const tile = selectDatedTile(dates, targetDate, nearest)
-  if (!tile) return null
-
   const path = tileToQuadTreePath(z, x, y)
-  const template = tile.dateHex ? FLATFILE_TM : FLATFILE_DEFAULT
-  const url = template.replace('{path}', path).replace('{epoch}', tile.epoch)
-    .replace('{dateHex}', tile.dateHex)
-  const data = await fetchAndDecrypt(url)
-  if (!data) return null
+  while (dates.length) {
+    const tile = selectDatedTile(dates, targetDate, nearest)
+    if (!tile) return null
 
-  const image = await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
-  return { image, substituted: tile.date !== targetDate }
-}
-
-export function getGoogleTileUrl(tileZoom, x, y, epoch) {
-  if (DEV) {
-    return `/gproxy/kh?v=188&tx=${x},${y},${tileZoom}&n=404&ep=1&e=${epoch}`
+    const template = tile.dateHex ? FLATFILE_TM : FLATFILE_DEFAULT
+    const url = template.replace('{path}', path).replace('{epoch}', tile.epoch)
+      .replace('{dateHex}', tile.dateHex)
+    const data = await fetchAndDecrypt(url)
+    if (data) {
+      const image = await createImageBitmap(new Blob([data], { type: 'image/jpeg' }))
+      return { image, substituted: tile.date !== targetDate }
+    }
+    if (!nearest) return null
+    dates.splice(dates.indexOf(tile), 1)
   }
-  return `https://khmdb.google.com/kh?v=188&tx=${x},${y},${tileZoom}&n=404&ep=1&e=${epoch}`
+  return null
 }
-
-export { latLngToQuadTree }

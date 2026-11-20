@@ -57,7 +57,7 @@
         <div class="export-options">
           <label>导出格式
             <select v-model="format">
-              <option value="tif">GeoTIFF (EPSG:3857)</option>
+              <option value="tif">GeoTIFF (EPSG:{{ provider === 'google' ? 4326 : 3857 }})</option>
               <option value="png">PNG</option>
             </select>
           </label>
@@ -97,7 +97,7 @@ const selectedZoom = ref(18)
 const format = ref('tif')
 const nearest = ref(false)
 const allowMissing = ref(false)
-const grid = computed(() => getExportGrid(props.bounds, selectedZoom.value))
+const grid = computed(() => getExportGrid(props.bounds, selectedZoom.value, props.provider))
 const minZoom = 1
 const maxZoom = computed(() => props.provider === 'wayback' ? 20 : 21)
 
@@ -116,16 +116,16 @@ watch(() => props.visible, visible => {
 })
 
 function getTileCount(z) {
-  return `${getExportGrid(props.bounds, z)?.total ?? '—'} 块`
+  return `${getExportGrid(props.bounds, z, props.provider)?.total ?? '—'} 块`
 }
 
 function getImageSize(z) {
-  const candidate = getExportGrid(props.bounds, z)
+  const candidate = getExportGrid(props.bounds, z, props.provider)
   return candidate ? `${candidate.width} × ${candidate.height}` : '—'
 }
 
 function getFileSize(z) {
-  const candidate = getExportGrid(props.bounds, z)
+  const candidate = getExportGrid(props.bounds, z, props.provider)
   if (!candidate) return '—'
   const bytes = candidate.width * candidate.height * 4
   if (bytes < 1024 * 1024) {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fromArrayBuffer, writeArrayBuffer } from 'geotiff'
-import { geoTiffMetadata, getExportGrid, latLngToTile, selectDatedTile } from '../src/imagery-grid.js'
+import { geoTiffMetadata, getExportGrid, latLngToEarthTile, latLngToTile, selectDatedTile } from '../src/imagery-grid.js'
+import { packetIndex, tileToQuadTreePath } from '../src/google-earth.js'
 import { fetchWaybackLayers, getWaybackDates, getWaybackTileUrl } from '../src/esri-wayback.js'
 
 test('tile indices stay in range at the poles and wrap at the antimeridian', () => {
@@ -63,4 +64,21 @@ test('Wayback catalog retries failure, shares requests and uses the WMTS templat
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+
+test('Google Earth uses the native geographic grid and Keyhole packet indices', () => {
+  const { x, y } = latLngToEarthTile(39.630575, -104.841299, 21)
+  const path = tileToQuadTreePath(21, x, y)
+  assert.equal(path, '0301232010121332030111')
+  assert.equal(packetIndex(path.slice(0, 4)), 70)
+  assert.equal(packetIndex(path.slice(0, 8)), 248)
+  assert.equal(packetIndex(path), 88)
+
+  const grid = getExportGrid({ west: 0, east: 45, north: 45, south: 0 }, 3, 'google')
+  assert.deepEqual([grid.width, grid.height, grid.west, grid.north], [256, 256, 0, 45])
+  const metadata = geoTiffMetadata(grid)
+  assert.equal(metadata.GeographicTypeGeoKey, 4326)
+  assert.equal(metadata.GTModelTypeGeoKey, 2)
+  assert.deepEqual(metadata.ModelPixelScale, [45 / 256, 45 / 256, 0])
 })

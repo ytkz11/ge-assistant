@@ -22,7 +22,7 @@
       <div class="progress-bar"><div class="progress-fill" :style="{ width: downloadProgress + '%' }"></div></div>
       <div class="progress-text">下载中... {{ downloadCurrent }}/{{ downloadTotal }} 瓦片</div>
     </div>
-    <label v-if="selectedDate" class="history-opacity">
+    <label v-if="selectedDate && provider === 'wayback'" class="history-opacity">
       历史影像不透明度
       <input v-model.number="historyOpacity" type="range" min="0" max="1" step="0.1" />
     </label>
@@ -141,14 +141,6 @@ function updateLabelsOffset() {
   }
 }
 
-function createGoogleHistoricalLayer(epoch) {
-  if (DEV) {
-    return L.tileLayer(`/gproxy/kh?v=188&tx={x},{y},{z}&n=404&ep=1&e=${epoch}`, { maxZoom: 21, opacity: 1.0 })
-  }
-  const proto = location.protocol === 'https:' ? 'https' : 'http'
-  return L.tileLayer(`${proto}://khmdb.google.com/kh?v=188&tx={x},{y},{z}&n=404&ep=1&e=${epoch}`, { maxZoom: 21, opacity: 1.0 })
-}
-
 function createWaybackLayer(layer) {
   const url = getWaybackTileUrl(layer, '{z}', '{x}', '{y}')
   return url ? L.tileLayer(url, {
@@ -227,10 +219,11 @@ async function loadTileImage(url) {
 
 async function downloadTiles({ bounds, zoom: tileZoom, format, nearest, allowMissing }) {
   if (downloading.value) throw new Error('已有下载任务')
-  const grid = getExportGrid(bounds, tileZoom)
+  const { provider, selectedDate, waybackLayers } = props
+  const grid = getExportGrid(bounds, tileZoom, provider)
   if (!grid?.canExport) throw new Error('选区过大或无效，请缩小选区或降低缩放级别')
 
-  const { provider, selectedDate, waybackLayers } = props
+  if (!selectedDate) throw new Error('请先选择历史影像日期或 Wayback 发布版本')
   const waybackLayer = waybackLayers.find(layer => layer.date === selectedDate)
   if (provider === 'wayback' && !waybackLayer) throw new Error('请先选择 Wayback 版本')
 
@@ -240,10 +233,7 @@ async function downloadTiles({ bounds, zoom: tileZoom, format, nearest, allowMis
     if (provider === 'wayback') {
       return loadTileImage(getWaybackTileUrl(waybackLayer, tileZoom, x, row))
     }
-    if (selectedDate) return downloadGoogleTilePerTile(tileZoom, x, row, selectedDate, nearest)
-    const host = (x + row) % 4
-    const prefix = DEV ? `/gproxy/mt${host}` : `https://mt${host}.google.com`
-    return loadTileImage(`${prefix}/vt/lyrs=s&x=${x}&y=${row}&z=${tileZoom}`)
+    return downloadGoogleTilePerTile(tileZoom, x, row, selectedDate, nearest)
   }
 
   const canvas = document.createElement('canvas')
@@ -371,9 +361,6 @@ watch(() => props.selectedDate, (newDate) => {
   if (props.provider === 'wayback' && props.waybackLayers.length > 0) {
     const layer = props.waybackLayers.find(l => l.date === newDate)
     if (layer) { historicalLayer = createWaybackLayer(layer); if (historicalLayer) historicalLayer.addTo(map) }
-  } else if (props.provider === 'google' && props.imageryDates.length > 0) {
-    const entry = props.imageryDates.find(d => d.date === newDate)
-    if (entry) { historicalLayer = createGoogleHistoricalLayer(entry.epoch || 0); historicalLayer.addTo(map) }
   }
   historicalLayer?.setOpacity(historyOpacity.value)
 })
